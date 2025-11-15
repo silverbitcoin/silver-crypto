@@ -254,6 +254,19 @@ impl KeyPair {
         
         result.is_ok()
     }
+    
+    /// Sign a transaction with this keypair
+    ///
+    /// This is a convenience method that serializes the transaction data
+    /// and signs it with the appropriate signature scheme.
+    pub fn sign_transaction(&self, tx_data: &silver_core::TransactionData) -> silver_core::Result<silver_core::Signature> {
+        // Serialize transaction data canonically
+        let serialized = bincode::serialize(tx_data)
+            .map_err(|e| silver_core::Error::Serialization(format!("Failed to serialize transaction: {}", e)))?;
+        
+        // Sign the serialized data
+        self.sign(&serialized)
+    }
 }
 
 impl Drop for KeyPair {
