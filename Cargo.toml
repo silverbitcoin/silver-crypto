@@ -1,0 +1,51 @@
+[package]
+name = "silver-crypto"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Quantum-resistant cryptographic primitives for SilverBitcoin"
+
+[dependencies]
+# Core
+silver-core = { path = "../silver-core" }
+
+# Workspace dependencies
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+zeroize = { workspace = true }
+bytes = { workspace = true }
+hex = { workspace = true }
+base64 = { workspace = true }
+
+# Post-Quantum Cryptography
+pqcrypto-sphincsplus = { workspace = true }
+pqcrypto-dilithium = { workspace = true }
+pqcrypto-kyber = { workspace = true }
+pqcrypto-traits = { workspace = true }
+
+# Classical Cryptography
+ed25519-dalek = { workspace = true }
+p521 = { workspace = true }
+blake3 = { workspace = true }
+sha2 = { workspace = true }
+sha3 = { workspace = true }
+
+# Encryption
+chacha20poly1305 = { workspace = true }
+argon2 = { workspace = true }
+
+# Key Management
+bip32 = { workspace = true }
+bip39 = { workspace = true }
+rand = { workspace = true }
+rand_core = { workspace = true }
+getrandom = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+criterion = { workspace = true }
+tempfile = { workspace = true }
