@@ -12,7 +12,7 @@
 //! - 512-bit preimage resistance
 //! - Provides safety margin for future cryptanalysis
 
-use blake3::{Hasher as Blake3Core, OutputReader};
+use blake3::Hasher as Blake3Core;
 use silver_core::SilverAddress;
 use thiserror::Error;
 
@@ -28,6 +28,7 @@ pub enum HashError {
     ComputationError(String),
 }
 
+/// Result type for hashing operations
 pub type Result<T> = std::result::Result<T, HashError>;
 
 /// Domain separation tags for different hash use cases

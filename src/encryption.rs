@@ -7,20 +7,18 @@
 //! - Multiple export formats (JSON, raw bytes, hex, base64)
 
 use chacha20poly1305::{
-    aead::{Aead, KeyInit, OsRng as AeadOsRng},
+    aead::{Aead, KeyInit},
     XChaCha20Poly1305, XNonce,
 };
 use argon2::{
     Argon2,
-    password_hash::{PasswordHasher, SaltString, PasswordHash, PasswordVerifier},
+    password_hash::{PasswordHasher, SaltString},
     Params, Version, Algorithm,
 };
 use pqcrypto_kyber::kyber1024;
 use pqcrypto_traits::kem::{
-    PublicKey as KemPublicKey,
-    SecretKey as KemSecretKey,
-    Ciphertext as KemCiphertext,
     SharedSecret as KemSharedSecret,
+    Ciphertext as KemCiphertext,
 };
 use rand::RngCore;
 use rand_core::OsRng;
@@ -28,6 +26,7 @@ use serde::{Serialize, Deserialize};
 use thiserror::Error;
 use hex;
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+
 
 /// Encryption-related errors
 #[derive(Error, Debug)]
@@ -53,6 +52,7 @@ pub enum EncryptionError {
     SerializationError(String),
 }
 
+/// Result type for encryption operations
 pub type Result<T> = std::result::Result<T, EncryptionError>;
 
 /// Encryption scheme enumeration
@@ -241,12 +241,15 @@ impl KeyEncryption {
         let ciphertext = cipher.encrypt(xnonce, private_key)
             .map_err(|e| EncryptionError::EncryptionFailed(e.to_string()))?;
         
+        // Convert Kyber ciphertext to bytes using the as_bytes method from pqcrypto_traits
+        let kyber_ct_bytes = kyber_ct.as_bytes().to_vec();
+        
         Ok(EncryptedKey {
             scheme: EncryptionScheme::Kyber1024XChaCha20,
             nonce,
             ciphertext,
             tag: vec![],
-            kyber_ciphertext: kyber_ct.as_bytes().to_vec(),
+            kyber_ciphertext: kyber_ct_bytes,
             salt,
             argon2_params: params,
         })

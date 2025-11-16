@@ -51,7 +51,9 @@ pub enum SignatureError {
     /// Scheme mismatch
     #[error("Signature scheme mismatch: expected {expected:?}, got {got:?}")]
     SchemeMismatch {
+        /// Expected signature scheme
         expected: SignatureScheme,
+        /// Actual signature scheme received
         got: SignatureScheme,
     },
     
@@ -60,6 +62,7 @@ pub enum SignatureError {
     CryptoError(String),
 }
 
+/// Result type for signature operations
 pub type Result<T> = std::result::Result<T, SignatureError>;
 
 /// Trait for signature verification
@@ -266,8 +269,6 @@ pub struct Secp512r1;
 impl Secp512r1 {
     /// Generate a new Secp512r1 keypair using secure random number generation
     pub fn generate_keypair() -> (Vec<u8>, Vec<u8>) {
-        use p521::elliptic_curve::sec1::ToEncodedPoint;
-        
         let signing_key = P521SigningKey::random(&mut OsRng);
         let verifying_key = P521VerifyingKey::from(&signing_key);
         
@@ -332,8 +333,6 @@ impl SignatureSigner for Secp512r1 {
     }
     
     fn public_key(&self, private_key: &[u8]) -> Result<PublicKey> {
-        use p521::elliptic_curve::sec1::ToEncodedPoint;
-        
         let sk = P521SigningKey::from_bytes(private_key.into())
             .map_err(|e| SignatureError::MalformedPrivateKey(e.to_string()))?;
         

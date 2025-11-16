@@ -13,28 +13,13 @@
 //! - Kyber1024 post-quantum key encapsulation
 //! - Automatic key zeroization on drop
 
-use crate::hashing::{hash_512, derive_key};
-use crate::signatures::{SignatureScheme, SignatureSigner, SphincsPlus, Dilithium3, Secp512r1};
+use crate::hashing::derive_key;
+use crate::signatures::{SignatureScheme, SphincsPlus, Dilithium3, Secp512r1};
 use silver_core::{PublicKey, SilverAddress};
 use bip39::{Mnemonic as Bip39Mnemonic, Language};
-use bip32::{XPrv, DerivationPath};
-use chacha20poly1305::{
-    aead::{Aead, KeyInit, OsRng as AeadOsRng},
-    XChaCha20Poly1305, XNonce,
-};
-use argon2::{
-    Argon2,
-    password_hash::{PasswordHasher, SaltString, PasswordHash, PasswordVerifier},
-    Params, Version, Algorithm,
-};
-use pqcrypto_kyber::kyber1024;
-use pqcrypto_traits::kem::{PublicKey as KemPublicKey, SecretKey as KemSecretKey, Ciphertext as KemCiphertext};
 use rand::RngCore;
 use rand_core::OsRng;
-use serde::{Serialize, Deserialize};
 use thiserror::Error;
-use hex;
-use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 
 /// Key management errors
 #[derive(Error, Debug)]
@@ -72,6 +57,7 @@ pub enum KeyError {
     SerializationError(String),
 }
 
+/// Result type for key management operations
 pub type Result<T> = std::result::Result<T, KeyError>;
 
 /// Mnemonic phrase for HD wallet recovery
@@ -126,12 +112,12 @@ impl Mnemonic {
     
     /// Get the mnemonic phrase as a string
     pub fn phrase(&self) -> String {
-        self.inner.word_iter().collect::<Vec<&str>>().join(" ")
+        self.inner.words().collect::<Vec<&str>>().join(" ")
     }
     
     /// Get the mnemonic words as a vector
     pub fn words(&self) -> Vec<String> {
-        self.inner.word_iter().map(|s| s.to_string()).collect()
+        self.inner.words().map(|s| s.to_string()).collect()
     }
     
     /// Derive a seed from the mnemonic with optional passphrase
