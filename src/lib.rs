@@ -4,7 +4,7 @@
 //!
 //! This crate provides:
 //! - Post-quantum signature schemes (SPHINCS+, Dilithium3)
-//! - Classical signatures (Secp512r1)
+//! - Classical signatures (Secp256k1, Secp512r1)
 //! - Hybrid signature mode
 //! - Blake3-512 hashing
 //! - Key management (HD wallets, encryption)
@@ -13,16 +13,15 @@
 #![warn(missing_docs, rust_2018_idioms)]
 #![forbid(unsafe_code)]
 
-pub mod signatures;
-pub mod hashing;
 pub mod encryption;
+pub mod hashing;
 pub mod keys;
+pub mod signatures;
 
+pub use encryption::{EncryptedKey, EncryptionScheme, KeyEncryption};
+pub use hashing::{derive_address, hash_512, Blake3Hasher};
+pub use keys::{HDWallet, KeyPair, Mnemonic};
 pub use signatures::{
-    SignatureScheme, SignatureVerifier, SignatureSigner,
-    SphincsPlus, Dilithium3, Secp512r1, HybridSignature,
-    SignatureError,
+    Dilithium3, HybridSignature, Secp256k1Signer, Secp512r1, SignatureError, SignatureScheme,
+    SignatureSigner, SignatureVerifier, SphincsPlus,
 };
-pub use hashing::{Blake3Hasher, hash_512, derive_address};
-pub use encryption::{KeyEncryption, EncryptedKey, EncryptionScheme};
-pub use keys::{KeyPair, HDWallet, Mnemonic};
