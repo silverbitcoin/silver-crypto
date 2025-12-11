@@ -146,6 +146,10 @@ pub fn derive_address(public_key: &[u8]) -> SilverAddress {
 /// Derive a SilverBitcoin address from a public key with canonical serialization
 ///
 /// This ensures consistent address derivation regardless of public key encoding.
+/// Canonical serialization follows these rules:
+/// 1. Validate public key format (must be 33 or 65 bytes for compressed/uncompressed)
+/// 2. Normalize to compressed format (33 bytes)
+/// 3. Hash the canonical form
 pub fn derive_address_canonical(public_key: &[u8]) -> Result<SilverAddress> {
     if public_key.is_empty() {
         return Err(HashError::InvalidInput(
@@ -153,9 +157,64 @@ pub fn derive_address_canonical(public_key: &[u8]) -> Result<SilverAddress> {
         ));
     }
 
-    // For production, we'd implement canonical serialization here
-    // For now, we just hash the raw bytes
-    Ok(derive_address(public_key))
+    // Validate and normalize public key to canonical form
+    let canonical_key = normalize_public_key(public_key)?;
+    
+    // Hash the canonical form with domain separation
+    let hash = hash_512_domain(&canonical_key, HashDomain::Address);
+    Ok(SilverAddress(hash))
+}
+
+/// Normalize a public key to canonical compressed format (33 bytes)
+///
+/// Supports:
+/// - Compressed format (33 bytes): 02/03 prefix + 32-byte X coordinate
+/// - Uncompressed format (65 bytes): 04 prefix + 32-byte X + 32-byte Y
+/// - Raw format (64 bytes): 32-byte X + 32-byte Y (assumes uncompressed)
+fn normalize_public_key(public_key: &[u8]) -> Result<Vec<u8>> {
+    match public_key.len() {
+        // Already compressed format
+        33 => {
+            // Validate prefix (02 or 03 for compressed)
+            match public_key[0] {
+                0x02 | 0x03 => Ok(public_key.to_vec()),
+                _ => Err(HashError::InvalidInput(
+                    "Invalid compressed public key prefix".to_string(),
+                )),
+            }
+        }
+        // Uncompressed format (04 prefix + X + Y)
+        65 => {
+            if public_key[0] != 0x04 {
+                return Err(HashError::InvalidInput(
+                    "Invalid uncompressed public key prefix".to_string(),
+                ));
+            }
+            // Compress: use 02/03 prefix based on Y coordinate parity
+            let y_last_byte = public_key[64];
+            let prefix = if y_last_byte & 1 == 0 { 0x02 } else { 0x03 };
+            
+            let mut compressed = vec![prefix];
+            compressed.extend_from_slice(&public_key[1..33]); // X coordinate
+            Ok(compressed)
+        }
+        // Raw format (X + Y, no prefix)
+        64 => {
+            // Compress: use 02/03 prefix based on Y coordinate parity
+            let y_last_byte = public_key[63];
+            let prefix = if y_last_byte & 1 == 0 { 0x02 } else { 0x03 };
+            
+            let mut compressed = vec![prefix];
+            compressed.extend_from_slice(&public_key[0..32]); // X coordinate
+            Ok(compressed)
+        }
+        _ => Err(HashError::InvalidInput(
+            format!(
+                "Invalid public key length: {}. Expected 33, 64, or 65 bytes",
+                public_key.len()
+            ),
+        )),
+    }
 }
 
 /// Incremental hasher for large data

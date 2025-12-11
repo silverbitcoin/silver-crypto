@@ -17,7 +17,7 @@ use chacha20poly1305::{
 };
 use hex;
 use pqcrypto_kyber::kyber1024;
-use pqcrypto_traits::kem::{Ciphertext as KemCiphertext, SharedSecret as KemSharedSecret};
+use pqcrypto_traits::kem::{Ciphertext as KemCiphertext, SecretKey, SharedSecret as KemSharedSecret};
 use rand::RngCore;
 use rand_core::OsRng;
 use serde::{Deserialize, Serialize};
@@ -82,17 +82,38 @@ impl Default for Argon2Params {
 
 impl Argon2Params {
     /// Create production-strength parameters
+    ///
+    /// Uses maximum security settings:
+    /// - 256 MB memory cost (resistant to GPU/ASIC attacks)
+    /// - 3 iterations (time cost)
+    /// - 4 parallel threads
     pub fn production() -> Self {
         Self::default()
     }
 
-    /// Create fast parameters for testing (NOT for production!)
-    pub fn fast() -> Self {
+    /// Create fast parameters for development and testing
+    ///
+    /// Uses reduced security settings for faster key derivation:
+    /// - 8 MB memory cost
+    /// - 1 iteration
+    /// - 1 parallel thread
+    ///
+    /// WARNING: Only use for development/testing. Never use in production.
+    /// This provides significantly weaker security than production parameters.
+    pub fn development() -> Self {
         Self {
             memory_cost: 8_192, // 8 MB
             time_cost: 1,
             parallelism: 1,
         }
+    }
+
+    /// Create fast parameters for testing (alias for development)
+    ///
+    /// Deprecated: Use `development()` instead for clarity.
+    #[deprecated(since = "1.0.0", note = "Use `development()` instead")]
+    pub fn fast() -> Self {
+        Self::development()
     }
 }
 
@@ -109,6 +130,8 @@ pub struct EncryptedKey {
     pub tag: Vec<u8>,
     /// Kyber1024 ciphertext (for post-quantum scheme)
     pub kyber_ciphertext: Vec<u8>,
+    /// Kyber1024 secret key (encrypted with password-derived key)
+    pub kyber_secret_key_encrypted: Vec<u8>,
     /// Argon2id salt
     pub salt: Vec<u8>,
     /// Argon2id parameters
@@ -195,6 +218,7 @@ impl KeyEncryption {
             ciphertext,
             tag: vec![], // Tag is included in ciphertext for XChaCha20-Poly1305
             kyber_ciphertext: vec![],
+            kyber_secret_key_encrypted: vec![],
             salt,
             argon2_params: params,
         })
@@ -214,7 +238,7 @@ impl KeyEncryption {
         let derived_key = Self::derive_key_argon2(password, &salt, &params)?;
 
         // Generate Kyber1024 keypair
-        let (kyber_pk, _kyber_sk) = kyber1024::keypair();
+        let (kyber_pk, kyber_sk) = kyber1024::keypair();
 
         // Encapsulate shared secret
         let (shared_secret, kyber_ct) = kyber1024::encapsulate(&kyber_pk);
@@ -225,11 +249,11 @@ impl KeyEncryption {
         combined.extend_from_slice(shared_secret.as_bytes());
         let encryption_key = crate::hashing::hash_512(&combined);
 
-        // Generate random nonce
+        // Generate random nonce for main encryption
         let mut nonce = [0u8; 24];
         OsRng.fill_bytes(&mut nonce);
 
-        // Encrypt with XChaCha20-Poly1305
+        // Encrypt private key with XChaCha20-Poly1305
         let cipher = XChaCha20Poly1305::new_from_slice(&encryption_key[..32])
             .map_err(|e| EncryptionError::EncryptionFailed(e.to_string()))?;
 
@@ -238,7 +262,23 @@ impl KeyEncryption {
             .encrypt(xnonce, private_key)
             .map_err(|e| EncryptionError::EncryptionFailed(e.to_string()))?;
 
-        // Convert Kyber ciphertext to bytes using the as_bytes method from pqcrypto_traits
+        // Encrypt Kyber secret key with derived key for later decryption
+        let kyber_sk_bytes = kyber_sk.as_bytes();
+        let mut kyber_nonce = [0u8; 24];
+        OsRng.fill_bytes(&mut kyber_nonce);
+
+        let kyber_cipher = XChaCha20Poly1305::new_from_slice(&derived_key[..32])
+            .map_err(|e| EncryptionError::EncryptionFailed(e.to_string()))?;
+
+        let kyber_xnonce = XNonce::from_slice(&kyber_nonce);
+        let mut kyber_sk_encrypted = kyber_xnonce.to_vec();
+        kyber_sk_encrypted.extend_from_slice(
+            &kyber_cipher
+                .encrypt(kyber_xnonce, kyber_sk_bytes)
+                .map_err(|e| EncryptionError::EncryptionFailed(e.to_string()))?,
+        );
+
+        // Convert Kyber ciphertext to bytes
         let kyber_ct_bytes = kyber_ct.as_bytes().to_vec();
 
         Ok(EncryptedKey {
@@ -247,6 +287,7 @@ impl KeyEncryption {
             ciphertext,
             tag: vec![],
             kyber_ciphertext: kyber_ct_bytes,
+            kyber_secret_key_encrypted: kyber_sk_encrypted,
             salt,
             argon2_params: params,
         })
@@ -281,15 +322,57 @@ impl KeyEncryption {
     /// Decrypt a quantum-encrypted key
     fn decrypt_quantum(encrypted_key: &EncryptedKey, password: &str) -> Result<Vec<u8>> {
         // Derive base key from password
-        let _derived_key =
+        let derived_key =
             Self::derive_key_argon2(password, &encrypted_key.salt, &encrypted_key.argon2_params)?;
 
-        // For decryption, we need the Kyber secret key
-        // In production, this would be stored separately or derived
-        // For now, we'll return an error as we can't decrypt without the SK
-        Err(EncryptionError::DecryptionFailed(
-            "Kyber decryption requires secret key (not implemented in this demo)".to_string(),
-        ))
+        // Decrypt Kyber secret key from encrypted storage
+        if encrypted_key.kyber_secret_key_encrypted.len() < 24 {
+            return Err(EncryptionError::DecryptionFailed(
+                "Invalid encrypted Kyber secret key format".to_string(),
+            ));
+        }
+
+        // Extract nonce and ciphertext
+        let kyber_nonce = &encrypted_key.kyber_secret_key_encrypted[..24];
+        let kyber_ct_data = &encrypted_key.kyber_secret_key_encrypted[24..];
+
+        let kyber_cipher = XChaCha20Poly1305::new_from_slice(&derived_key[..32])
+            .map_err(|e| EncryptionError::DecryptionFailed(e.to_string()))?;
+
+        let kyber_xnonce = XNonce::from_slice(kyber_nonce);
+        let kyber_sk_bytes = kyber_cipher
+            .decrypt(kyber_xnonce, kyber_ct_data)
+            .map_err(|_| EncryptionError::InvalidPassword)?;
+
+        // Reconstruct Kyber secret key from bytes
+        let kyber_sk = pqcrypto_kyber::kyber1024::SecretKey::from_bytes(&kyber_sk_bytes)
+            .map_err(|e| EncryptionError::DecryptionFailed(format!("Invalid Kyber SK: {}", e)))?;
+
+        // Decapsulate shared secret using Kyber secret key
+        let shared_secret = kyber1024::decapsulate(
+            &pqcrypto_kyber::kyber1024::Ciphertext::from_bytes(&encrypted_key.kyber_ciphertext)
+                .map_err(|e| {
+                    EncryptionError::DecryptionFailed(format!("Invalid Kyber CT: {}", e))
+                })?,
+            &kyber_sk,
+        );
+
+        // Combine derived key + shared secret using Blake3
+        let mut combined = Vec::new();
+        combined.extend_from_slice(&derived_key);
+        combined.extend_from_slice(shared_secret.as_bytes());
+        let encryption_key = crate::hashing::hash_512(&combined);
+
+        // Decrypt private key with XChaCha20-Poly1305
+        let cipher = XChaCha20Poly1305::new_from_slice(&encryption_key[..32])
+            .map_err(|e| EncryptionError::DecryptionFailed(e.to_string()))?;
+
+        let xnonce = XNonce::from_slice(&encrypted_key.nonce);
+        let plaintext = cipher
+            .decrypt(xnonce, encrypted_key.ciphertext.as_slice())
+            .map_err(|_| EncryptionError::InvalidPassword)?;
+
+        Ok(plaintext)
     }
 
     /// Derive a key from password using Argon2id

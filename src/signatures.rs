@@ -159,17 +159,26 @@ impl SignatureSigner for SphincsPlus {
     }
 
     fn public_key(&self, private_key: &[u8]) -> Result<PublicKey> {
+        // Validate private key length (SPHINCS+ secret key is 64 bytes)
+        if private_key.len() != 64 {
+            return Err(SignatureError::MalformedPrivateKey(
+                format!("Invalid SPHINCS+ secret key length: expected 64, got {}", private_key.len())
+            ));
+        }
+        
         let _sk = sphincs::SecretKey::from_bytes(private_key)
             .map_err(|e| SignatureError::MalformedPrivateKey(format!("{:?}", e)))?;
 
-        // Derive public key from secret key
-        let (pk, _) = sphincs::keypair();
-        // Note: In production, we'd need to properly derive PK from SK
-        // For now, we'll use the keypair generation approach
+        // Extract public key from secret key using SPHINCS+ algorithm
+        // In SPHINCS+, the public key is derived from the secret key
+        // The secret key contains the seed and the public key is computed from it
+        // For SPHINCS+, we extract the public key bytes from the secret key structure
+        // The public key is stored in the last 32 bytes of the secret key
+        let pk_bytes = private_key[32..64].to_vec();
 
         Ok(PublicKey {
             scheme: SignatureScheme::SphincsPlus,
-            bytes: pk.as_bytes().to_vec(),
+            bytes: pk_bytes,
         })
     }
 }

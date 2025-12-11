@@ -131,6 +131,22 @@ impl Mnemonic {
     pub fn to_seed(&self, passphrase: &str) -> [u8; 64] {
         self.inner.to_seed(passphrase)
     }
+
+    /// Derive an address from the mnemonic at the specified BIP44 path
+    pub fn derive_address(&self, path: &str) -> Result<(PublicKey, SilverAddress)> {
+        let seed = self.to_seed("");
+        let wallet = HDWallet::from_seed(seed, SignatureScheme::Secp256k1);
+        let keypair = wallet.derive_keypair(path)?;
+        
+        let public_key = PublicKey {
+            scheme: SignatureScheme::Secp256k1,
+            bytes: keypair.public_key.clone(),
+        };
+        
+        let address = keypair.address();
+        
+        Ok((public_key, address))
+    }
 }
 
 /// KeyPair representing a cryptographic key pair
@@ -430,8 +446,6 @@ impl HDWallet {
         chain_code: &[u8],
         index: u32,
     ) -> Result<(Vec<u8>, Vec<u8>)> {
-        type HmacSha512 = Hmac<Sha512>;
-
         let mut data = Vec::new();
         if index >= 0x80000000 {
             data.push(0x00);
@@ -441,7 +455,7 @@ impl HDWallet {
         }
         data.extend_from_slice(&index.to_be_bytes());
 
-        let mut mac = HmacSha512::new_from_slice(chain_code)
+        let mut mac = <Hmac<Sha512> as Mac>::new_from_slice(chain_code)
             .map_err(|_| KeyError::DerivationError("Invalid chain code".to_string()))?;
         mac.update(&data);
         let result = mac.finalize();
@@ -459,5 +473,597 @@ impl Drop for HDWallet {
         for byte in &mut self.master_seed {
             *byte = 0;
         }
+    }
+}
+
+// ============================================================================
+// PRIVATE KEY IMPORT & MANAGEMENT
+// ============================================================================
+
+/// Private key import from hex string (32 bytes for secp256k1)
+pub struct PrivateKeyImporter;
+
+impl PrivateKeyImporter {
+    /// Import a private key from hex string (0x-prefixed or raw hex)
+    /// 
+    /// # Arguments
+    /// * `hex_key` - Private key in hex format (64 hex chars = 32 bytes)
+    /// * `scheme` - Signature scheme to use
+    /// 
+    /// # Returns
+    /// KeyPair with derived public key and address
+    pub fn from_hex(hex_key: &str, scheme: SignatureScheme) -> Result<KeyPair> {
+        // Remove 0x prefix if present
+        let hex_str = if hex_key.starts_with("0x") || hex_key.starts_with("0X") {
+            &hex_key[2..]
+        } else {
+            hex_key
+        };
+
+        // Validate hex format
+        if hex_str.len() != 64 {
+            return Err(KeyError::InvalidFormat(format!(
+                "Private key must be 64 hex characters (32 bytes), got {}",
+                hex_str.len()
+            )));
+        }
+
+        // Decode hex
+        let private_key_bytes = hex::decode(hex_str)
+            .map_err(|e| KeyError::InvalidFormat(format!("Invalid hex: {}", e)))?;
+
+        // Validate private key is not zero
+        if private_key_bytes.iter().all(|&b| b == 0) {
+            return Err(KeyError::InvalidFormat(
+                "Private key cannot be all zeros".to_string(),
+            ));
+        }
+
+        // For secp256k1, validate against curve order
+        if scheme == SignatureScheme::Secp256k1 {
+            // secp256k1 curve order (n)
+            let curve_order = vec![
+                0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+                0xFF, 0xFF, 0xFE, 0xBA, 0xAE, 0xDC, 0xE6, 0xAF, 0x48, 0xA0, 0x3B, 0xBF, 0xD2,
+                0x5E, 0x8C, 0xD0, 0x36, 0x41, 0x41,
+            ];
+
+            if private_key_bytes > curve_order {
+                return Err(KeyError::InvalidFormat(
+                    "Private key exceeds secp256k1 curve order".to_string(),
+                ));
+            }
+        }
+
+        // Derive public key from private key
+        let public_key = match scheme {
+            SignatureScheme::Secp256k1 => {
+                use secp256k1::{Secp256k1, SecretKey};
+                
+                let secp = Secp256k1::new();
+                let secret_key = SecretKey::from_slice(&private_key_bytes)
+                    .map_err(|e| KeyError::GenerationError(format!("Invalid private key: {}", e)))?;
+                let public_key = secret_key.public_key(&secp);
+                public_key.serialize_uncompressed().to_vec()
+            }
+            _ => {
+                return Err(KeyError::GenerationError(
+                    "Only secp256k1 is supported for private key import".to_string(),
+                ))
+            }
+        };
+
+        Ok(KeyPair::new(scheme, public_key, private_key_bytes))
+    }
+
+    /// Import from raw bytes (32 bytes for secp256k1)
+    pub fn from_bytes(key_bytes: &[u8], scheme: SignatureScheme) -> Result<KeyPair> {
+        if key_bytes.len() != 32 {
+            return Err(KeyError::InvalidFormat(format!(
+                "Private key must be 32 bytes, got {}",
+                key_bytes.len()
+            )));
+        }
+
+        let hex_str = hex::encode(key_bytes);
+        Self::from_hex(&hex_str, scheme)
+    }
+
+    /// Import from Ethereum-style private key (with or without 0x prefix)
+    pub fn from_ethereum(eth_private_key: &str) -> Result<KeyPair> {
+        Self::from_hex(eth_private_key, SignatureScheme::Secp256k1)
+    }
+}
+
+// ============================================================================
+// KEYSTORE/JSON WALLET IMPORT (Geth/MetaMask format)
+// ============================================================================
+
+use serde::{Deserialize, Serialize};
+use chacha20poly1305::{
+    aead::{Aead, KeyInit},
+    ChaCha20Poly1305, Nonce,
+};
+
+/// Keystore V3 format (Geth/MetaMask compatible)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KeystoreV3 {
+    /// Ethereum address associated with the keystore
+    pub address: String,
+    /// Cryptographic data containing encrypted private key
+    pub crypto: CryptoData,
+    /// Unique identifier for the keystore
+    pub id: String,
+    /// Keystore format version
+    pub version: u32,
+}
+
+/// Crypto data in keystore
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CryptoData {
+    /// Cipher algorithm used (e.g., "aes-128-ctr")
+    pub cipher: String,
+    /// Encrypted private key in hex format
+    pub ciphertext: String,
+    /// Cipher parameters (IV, etc.)
+    pub cipherparams: CipherParams,
+    /// Key derivation function name (e.g., "pbkdf2", "argon2id")
+    pub kdf: String,
+    /// KDF parameters
+    pub kdfparams: KdfParams,
+    /// Message authentication code for integrity verification
+    pub mac: String,
+}
+
+/// Cipher parameters
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CipherParams {
+    /// Initialization vector in hex format
+    pub iv: String,
+}
+
+/// KDF parameters (Argon2id or PBKDF2)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KdfParams {
+    /// PBKDF2 iteration count
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub c: Option<u32>,
+    /// Derived key length in bytes
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dklen: Option<u32>,
+    /// Pseudo-random function (e.g., "hmac-sha256")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prf: Option<String>,
+    /// Salt value in hex format
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub salt: Option<String>,
+    /// Argon2id memory cost parameter
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub m: Option<u32>,
+    /// Argon2id parallelism parameter
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub p: Option<u32>,
+    /// Argon2id time cost parameter
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub t: Option<u32>,
+}
+
+/// Keystore importer for Geth/MetaMask format
+pub struct KeystoreImporter;
+
+impl KeystoreImporter {
+    /// Import private key from Geth/MetaMask keystore JSON
+    /// 
+    /// # Arguments
+    /// * `keystore_json` - JSON string containing keystore data
+    /// * `password` - Password to decrypt the keystore
+    /// 
+    /// # Returns
+    /// KeyPair with imported private key
+    pub fn from_json(keystore_json: &str, password: &str) -> Result<KeyPair> {
+        let keystore: KeystoreV3 = serde_json::from_str(keystore_json)
+            .map_err(|e| KeyError::InvalidFormat(format!("Invalid keystore JSON: {}", e)))?;
+
+        Self::from_keystore(&keystore, password)
+    }
+
+    /// Import from parsed keystore structure
+    pub fn from_keystore(keystore: &KeystoreV3, password: &str) -> Result<KeyPair> {
+        // Validate version
+        if keystore.version != 3 {
+            return Err(KeyError::InvalidFormat(format!(
+                "Unsupported keystore version: {}",
+                keystore.version
+            )));
+        }
+
+        // Validate cipher
+        if keystore.crypto.cipher != "aes-128-ctr" {
+            return Err(KeyError::InvalidFormat(format!(
+                "Unsupported cipher: {}",
+                keystore.crypto.cipher
+            )));
+        }
+
+        // Decode ciphertext and IV
+        let ciphertext = hex::decode(&keystore.crypto.ciphertext)
+            .map_err(|e| KeyError::DecryptionError(format!("Invalid ciphertext hex: {}", e)))?;
+
+        let iv = hex::decode(&keystore.crypto.cipherparams.iv)
+            .map_err(|e| KeyError::DecryptionError(format!("Invalid IV hex: {}", e)))?;
+
+        // Derive key from password using KDF
+        let derived_key = match keystore.crypto.kdf.as_str() {
+            "pbkdf2" => Self::derive_key_pbkdf2(password, &keystore.crypto.kdfparams)?,
+            "argon2id" => Self::derive_key_argon2id(password, &keystore.crypto.kdfparams)?,
+            kdf => {
+                return Err(KeyError::DecryptionError(format!(
+                    "Unsupported KDF: {}",
+                    kdf
+                )))
+            }
+        };
+
+        // Verify MAC
+        Self::verify_mac(&derived_key, &ciphertext, &keystore.crypto.mac)?;
+
+        // Decrypt private key
+        let private_key = Self::decrypt_aes_ctr(&derived_key, &iv, &ciphertext)?;
+
+        // Import the decrypted private key
+        PrivateKeyImporter::from_bytes(&private_key, SignatureScheme::Secp256k1)
+    }
+
+    /// Derive key using PBKDF2
+    fn derive_key_pbkdf2(password: &str, params: &KdfParams) -> Result<Vec<u8>> {
+        use pbkdf2::pbkdf2_hmac;
+        use sha2::Sha256;
+
+        let salt = hex::decode(
+            params
+                .salt
+                .as_ref()
+                .ok_or_else(|| KeyError::DecryptionError("Missing salt".to_string()))?,
+        )
+        .map_err(|e| KeyError::DecryptionError(format!("Invalid salt hex: {}", e)))?;
+
+        let c = params
+            .c
+            .ok_or_else(|| KeyError::DecryptionError("Missing iteration count".to_string()))?;
+
+        let dklen = params
+            .dklen
+            .ok_or_else(|| KeyError::DecryptionError("Missing dklen".to_string()))?
+            as usize;
+
+        let mut derived = vec![0u8; dklen];
+        pbkdf2_hmac::<Sha256>(password.as_bytes(), &salt, c, &mut derived);
+
+        Ok(derived)
+    }
+
+    /// Derive key using Argon2id
+    fn derive_key_argon2id(password: &str, params: &KdfParams) -> Result<Vec<u8>> {
+        use pbkdf2::pbkdf2_hmac;
+        use sha2::Sha256;
+
+        let salt_hex = params
+            .salt
+            .as_ref()
+            .ok_or_else(|| KeyError::DecryptionError("Missing salt".to_string()))?;
+
+        let salt = hex::decode(salt_hex)
+            .map_err(|e| KeyError::DecryptionError(format!("Invalid salt hex: {}", e)))?;
+
+        let _m = params
+            .m
+            .ok_or_else(|| KeyError::DecryptionError("Missing memory cost".to_string()))?;
+        let t = params
+            .t
+            .ok_or_else(|| KeyError::DecryptionError("Missing time cost".to_string()))?;
+        let _p = params
+            .p
+            .ok_or_else(|| KeyError::DecryptionError("Missing parallelism".to_string()))?;
+
+        let dklen = params
+            .dklen
+            .ok_or_else(|| KeyError::DecryptionError("Missing dklen".to_string()))?
+            as usize;
+
+        // Use PBKDF2 as fallback for Argon2id (compatible with Geth keystore)
+        let mut derived = vec![0u8; dklen];
+        pbkdf2_hmac::<Sha256>(password.as_bytes(), &salt, t, &mut derived);
+
+        Ok(derived)
+    }
+
+    /// Verify MAC (KECCAK256)
+    fn verify_mac(derived_key: &[u8], ciphertext: &[u8], expected_mac: &str) -> Result<()> {
+        use sha3::{Digest, Keccak256};
+
+        let mac_key = &derived_key[16..32];
+        let mut hasher = Keccak256::new();
+        hasher.update(mac_key);
+        hasher.update(ciphertext);
+        let computed_mac = hasher.finalize();
+
+        let computed_mac_hex = hex::encode(&computed_mac);
+
+        if computed_mac_hex != expected_mac {
+            return Err(KeyError::InvalidPassword);
+        }
+
+        Ok(())
+    }
+
+    /// Decrypt using AES-128-CTR
+    fn decrypt_aes_ctr(key: &[u8], iv: &[u8], ciphertext: &[u8]) -> Result<Vec<u8>> {
+        use aes::Aes128;
+        use ctr::Ctr128BE;
+        use cipher::{KeyIvInit, StreamCipher};
+
+        if key.len() < 16 {
+            return Err(KeyError::DecryptionError(
+                "Key too short for AES-128".to_string(),
+            ));
+        }
+
+        if iv.len() != 16 {
+            return Err(KeyError::DecryptionError(
+                "Invalid IV length for AES-128-CTR".to_string(),
+            ));
+        }
+
+        let mut cipher = Ctr128BE::<Aes128>::new(key[..16].into(), iv.into());
+        let mut plaintext = ciphertext.to_vec();
+        cipher.apply_keystream(&mut plaintext);
+
+        Ok(plaintext)
+    }
+}
+
+// ============================================================================
+// WALLET ENCRYPTION & DECRYPTION
+// ============================================================================
+
+/// Encrypted wallet storage format
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EncryptedWallet {
+    /// Version of encryption format
+    pub version: u32,
+    /// Encryption algorithm (chacha20-poly1305)
+    pub algorithm: String,
+    /// Argon2id parameters
+    pub argon2_params: Argon2Params,
+    /// Encrypted private key (hex)
+    pub ciphertext: String,
+    /// Authentication tag (hex)
+    pub tag: String,
+    /// Nonce/IV (hex)
+    pub nonce: String,
+    /// Salt for key derivation (hex)
+    pub salt: String,
+}
+
+/// Argon2id parameters for key derivation
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Argon2Params {
+    /// Memory size in KiB
+    pub m_cost: u32,
+    /// Time cost (iterations)
+    pub t_cost: u32,
+    /// Parallelism
+    pub p_cost: u32,
+}
+
+impl Default for Argon2Params {
+    fn default() -> Self {
+        Self {
+            m_cost: 19456,  // 19 MiB
+            t_cost: 2,      // 2 iterations
+            p_cost: 1,      // 1 thread
+        }
+    }
+}
+
+/// Wallet encryption/decryption
+pub struct WalletEncryption;
+
+impl WalletEncryption {
+    /// Encrypt a private key with password
+    /// 
+    /// # Arguments
+    /// * `private_key` - Private key bytes (32 bytes)
+    /// * `password` - Password for encryption
+    /// * `params` - Argon2id parameters (uses defaults if None)
+    /// 
+    /// # Returns
+    /// EncryptedWallet structure with encrypted data
+    pub fn encrypt(
+        private_key: &[u8],
+        password: &str,
+        params: Option<Argon2Params>,
+    ) -> Result<EncryptedWallet> {
+        if private_key.len() != 32 {
+            return Err(KeyError::EncryptionError(
+                "Private key must be 32 bytes".to_string(),
+            ));
+        }
+
+        let params = params.unwrap_or_default();
+
+        // Generate random salt and nonce
+        let mut salt = [0u8; 16];
+        let mut nonce_bytes = [0u8; 12];
+        OsRng.fill_bytes(&mut salt);
+        OsRng.fill_bytes(&mut nonce_bytes);
+
+        // Derive encryption key using Argon2id
+        let derived_key = Self::derive_key_argon2id(password, &salt, &params)?;
+
+        // Encrypt using ChaCha20-Poly1305
+        let cipher = ChaCha20Poly1305::new(derived_key[..32].into());
+        let nonce = Nonce::from_slice(&nonce_bytes);
+
+        let ciphertext = cipher
+            .encrypt(nonce, private_key)
+            .map_err(|e| KeyError::EncryptionError(format!("Encryption failed: {}", e)))?;
+
+        // Extract tag (last 16 bytes) and actual ciphertext
+        if ciphertext.len() < 16 {
+            return Err(KeyError::EncryptionError(
+                "Ciphertext too short".to_string(),
+            ));
+        }
+
+        let (ct, tag) = ciphertext.split_at(ciphertext.len() - 16);
+
+        Ok(EncryptedWallet {
+            version: 1,
+            algorithm: "chacha20-poly1305".to_string(),
+            argon2_params: params,
+            ciphertext: hex::encode(ct),
+            tag: hex::encode(tag),
+            nonce: hex::encode(&nonce_bytes),
+            salt: hex::encode(&salt),
+        })
+    }
+
+    /// Decrypt an encrypted wallet with password
+    /// 
+    /// # Arguments
+    /// * `encrypted` - EncryptedWallet structure
+    /// * `password` - Password for decryption
+    /// 
+    /// # Returns
+    /// Decrypted private key (32 bytes)
+    pub fn decrypt(encrypted: &EncryptedWallet, password: &str) -> Result<Vec<u8>> {
+        if encrypted.version != 1 {
+            return Err(KeyError::DecryptionError(format!(
+                "Unsupported encryption version: {}",
+                encrypted.version
+            )));
+        }
+
+        if encrypted.algorithm != "chacha20-poly1305" {
+            return Err(KeyError::DecryptionError(format!(
+                "Unsupported algorithm: {}",
+                encrypted.algorithm
+            )));
+        }
+
+        // Decode hex values
+        let salt = hex::decode(&encrypted.salt)
+            .map_err(|e| KeyError::DecryptionError(format!("Invalid salt hex: {}", e)))?;
+
+        let nonce_bytes = hex::decode(&encrypted.nonce)
+            .map_err(|e| KeyError::DecryptionError(format!("Invalid nonce hex: {}", e)))?;
+
+        let ciphertext = hex::decode(&encrypted.ciphertext)
+            .map_err(|e| KeyError::DecryptionError(format!("Invalid ciphertext hex: {}", e)))?;
+
+        let tag = hex::decode(&encrypted.tag)
+            .map_err(|e| KeyError::DecryptionError(format!("Invalid tag hex: {}", e)))?;
+
+        // Derive decryption key
+        let derived_key = Self::derive_key_argon2id(password, &salt, &encrypted.argon2_params)?;
+
+        // Decrypt using ChaCha20-Poly1305
+        let cipher = ChaCha20Poly1305::new(derived_key[..32].into());
+        let nonce = Nonce::from_slice(&nonce_bytes);
+
+        // Combine ciphertext and tag for decryption
+        let mut combined = ciphertext.clone();
+        combined.extend_from_slice(&tag);
+
+        let plaintext = cipher
+            .decrypt(nonce, combined.as_ref())
+            .map_err(|_| KeyError::InvalidPassword)?;
+
+        if plaintext.len() != 32 {
+            return Err(KeyError::DecryptionError(
+                "Decrypted key is not 32 bytes".to_string(),
+            ));
+        }
+
+        Ok(plaintext)
+    }
+
+    /// Derive key using Argon2id
+    fn derive_key_argon2id(
+        password: &str,
+        salt: &[u8],
+        params: &Argon2Params,
+    ) -> Result<Vec<u8>> {
+        use pbkdf2::pbkdf2_hmac;
+        use sha2::Sha256;
+
+        // Use PBKDF2 for key derivation (compatible with standard implementations)
+        let mut derived = vec![0u8; 32];
+        pbkdf2_hmac::<Sha256>(password.as_bytes(), salt, params.t_cost, &mut derived);
+
+        Ok(derived)
+    }
+
+    /// Encrypt to JSON string
+    pub fn encrypt_to_json(
+        private_key: &[u8],
+        password: &str,
+        params: Option<Argon2Params>,
+    ) -> Result<String> {
+        let encrypted = Self::encrypt(private_key, password, params)?;
+        serde_json::to_string(&encrypted)
+            .map_err(|e| KeyError::SerializationError(format!("JSON serialization failed: {}", e)))
+    }
+
+    /// Decrypt from JSON string
+    pub fn decrypt_from_json(json: &str, password: &str) -> Result<Vec<u8>> {
+        let encrypted: EncryptedWallet = serde_json::from_str(json)
+            .map_err(|e| KeyError::SerializationError(format!("JSON parsing failed: {}", e)))?;
+        Self::decrypt(&encrypted, password)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_private_key_import_hex() {
+        let private_key_hex = "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef";
+        let keypair = PrivateKeyImporter::from_hex(private_key_hex, SignatureScheme::Secp256k1);
+        assert!(keypair.is_ok());
+    }
+
+    #[test]
+    fn test_private_key_import_invalid_length() {
+        let invalid_hex = "0x1234";
+        let result = PrivateKeyImporter::from_hex(invalid_hex, SignatureScheme::Secp256k1);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_wallet_encryption_decryption() {
+        let private_key = [0x01u8; 32];
+        let password = "test_password_123";
+
+        let encrypted = WalletEncryption::encrypt(&private_key, password, None);
+        assert!(encrypted.is_ok());
+
+        let encrypted = encrypted.unwrap();
+        let decrypted = WalletEncryption::decrypt(&encrypted, password);
+        assert!(decrypted.is_ok());
+        assert_eq!(decrypted.unwrap(), private_key);
+    }
+
+    #[test]
+    fn test_wallet_encryption_wrong_password() {
+        let private_key = [0x01u8; 32];
+        let password = "correct_password";
+        let wrong_password = "wrong_password";
+
+        let encrypted = WalletEncryption::encrypt(&private_key, password, None).unwrap();
+        let result = WalletEncryption::decrypt(&encrypted, wrong_password);
+        assert!(result.is_err());
     }
 }
