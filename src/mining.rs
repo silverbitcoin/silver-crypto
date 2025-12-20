@@ -103,8 +103,8 @@ pub fn meets_difficulty(hash: &[u8; 64], target: u64) -> bool {
     
     // Convert first 32 bytes of hash to u256-like comparison
     let mut hash_value = 0u64;
-    for i in 0..8 {
-        hash_value = (hash_value << 8) | (hash[i] as u64);
+    for byte in hash.iter().take(8) {
+        hash_value = (hash_value << 8) | (*byte as u64);
     }
     
     // Check if hash_value < target
@@ -181,7 +181,9 @@ impl DifficultyAdjuster {
         let expected_time = self.target_block_time * self.adjustment_interval;
 
         // Adjust difficulty proportionally
-        let new_difficulty = if actual_time > 0 {
+        
+
+        if actual_time > 0 {
             // new_diff = current_diff * expected_time / actual_time
             let adjusted = (current_difficulty as u128 * expected_time as u128)
                 / actual_time as u128;
@@ -191,9 +193,7 @@ impl DifficultyAdjuster {
             std::cmp::max(clamped, self.min_difficulty)
         } else {
             current_difficulty
-        };
-
-        new_difficulty
+        }
     }
 
     /// Validate difficulty is within acceptable range

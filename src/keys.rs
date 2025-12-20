@@ -320,7 +320,7 @@ impl HDWallet {
 
         let mut hasher = Sha512::new();
         hasher.update(b"BIP32 seed");
-        hasher.update(&master_seed);
+        hasher.update(master_seed);
         let result = hasher.finalize();
 
         let mut chain_code = [0u8; 32];
@@ -337,7 +337,7 @@ impl HDWallet {
     pub fn from_seed(seed: [u8; 64], scheme: SignatureScheme) -> Self {
         let mut hasher = Sha512::new();
         hasher.update(b"BIP32 seed");
-        hasher.update(&seed);
+        hasher.update(seed);
         let result = hasher.finalize();
 
         let mut chain_code = [0u8; 32];
@@ -402,8 +402,8 @@ impl HDWallet {
     fn parse_bip32_path(&self, path: &str) -> Result<Vec<u32>> {
         let mut components = Vec::new();
 
-        let path = if path.starts_with("m/") {
-            &path[2..]
+        let path = if let Some(stripped) = path.strip_prefix("m/") {
+            stripped
         } else {
             return Err(KeyError::DerivationError(
                 "Path must start with 'm/'".to_string(),
@@ -415,8 +415,8 @@ impl HDWallet {
                 continue;
             }
 
-            let (index_str, hardened) = if component.ends_with('\'') {
-                (&component[..component.len() - 1], true)
+            let (index_str, hardened) = if let Some(stripped) = component.strip_suffix('\'') {
+                (stripped, true)
             } else {
                 (component, false)
             };
@@ -787,7 +787,7 @@ impl KeystoreImporter {
         hasher.update(ciphertext);
         let computed_mac = hasher.finalize();
 
-        let computed_mac_hex = hex::encode(&computed_mac);
+        let computed_mac_hex = hex::encode(computed_mac);
 
         if computed_mac_hex != expected_mac {
             return Err(KeyError::InvalidPassword);
@@ -924,8 +924,8 @@ impl WalletEncryption {
             argon2_params: params,
             ciphertext: hex::encode(ct),
             tag: hex::encode(tag),
-            nonce: hex::encode(&nonce_bytes),
-            salt: hex::encode(&salt),
+            nonce: hex::encode(nonce_bytes),
+            salt: hex::encode(salt),
         })
     }
 
