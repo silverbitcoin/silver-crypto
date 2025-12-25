@@ -233,16 +233,21 @@ pub fn hash_512_batch(inputs: &[&[u8]]) -> Vec<[u8; 64]> {
 }
 
 /// Compute a keyed hash using SHA-512 HMAC
-pub fn hash_512_keyed(key: &[u8; 32], data: &[u8]) -> [u8; 64] {
+pub fn hash_512_keyed(key: &[u8; 32], data: &[u8]) -> Result<[u8; 64]> {
     use hmac::{Hmac, Mac};
     
+    // HMAC-SHA512 with proper error handling
+    // The key is always 32 bytes, which is valid for HMAC-SHA512
     let mut mac = Hmac::<Sha512>::new_from_slice(key)
-        .expect("HMAC can take key of any size");
+        .map_err(|e| HashError::ComputationError(
+            format!("HMAC initialization failed: {}", e)
+        ))?;
+    
     mac.update(data);
     
     let mut output = [0u8; 64];
     output.copy_from_slice(&mac.finalize().into_bytes());
-    output
+    Ok(output)
 }
 
 /// Compute a derived key using SHA-512 HKDF
