@@ -14,13 +14,13 @@
 //! - Automatic key zeroization on drop
 
 use crate::signatures::{Dilithium3, Secp512r1, SignatureScheme, SphincsPlus};
+use bip39::{Language, Mnemonic as Bip39Mnemonic};
 use hmac::{Hmac, Mac};
 use rand::RngCore;
 use rand_core::OsRng;
 use sha2::{Digest, Sha512};
 use silver_core::{PublicKey, SilverAddress};
 use thiserror::Error;
-use bip39::{Mnemonic as Bip39Mnemonic, Language};
 
 /// Key management errors
 #[derive(Error, Debug)]
@@ -133,14 +133,14 @@ impl Mnemonic {
         let seed = self.to_seed("");
         let wallet = HDWallet::from_seed(seed, SignatureScheme::Secp512r1);
         let keypair = wallet.derive_keypair(path)?;
-        
+
         let public_key = PublicKey {
             scheme: SignatureScheme::Secp512r1,
             bytes: keypair.public_key.clone(),
         };
-        
+
         let address = keypair.address();
-        
+
         Ok((public_key, address))
     }
 }
@@ -273,9 +273,7 @@ impl KeyPair {
         tx_data: &silver_core::TransactionData,
     ) -> silver_core::Result<silver_core::Signature> {
         let serialized = serde_json::to_vec(tx_data)
-            .map_err(|e| {
-                silver_core::Error::Serialization(e.to_string())
-            })?;
+            .map_err(|e| silver_core::Error::Serialization(e.to_string()))?;
 
         self.sign(&serialized)
     }
@@ -466,14 +464,14 @@ pub struct PrivateKeyImporter;
 
 impl PrivateKeyImporter {
     /// Import a private key from hex string (0x-prefixed or raw hex)
-    /// 
+    ///
     /// # Arguments
     /// * `hex_key` - Private key in hex format (size depends on scheme)
     ///   - Secp512r1: 132 hex chars (66 bytes)
     ///   - SPHINCS+: 128 hex chars (64 bytes)
     ///   - Dilithium3: 5120 hex chars (2560 bytes)
     /// * `scheme` - Signature scheme to use
-    /// 
+    ///
     /// # Returns
     /// KeyPair with derived public key and address
     pub fn from_hex(hex_key: &str, scheme: SignatureScheme) -> Result<KeyPair> {
@@ -486,9 +484,9 @@ impl PrivateKeyImporter {
 
         // Validate hex format based on scheme
         let expected_hex_len = match scheme {
-            SignatureScheme::Secp512r1 => 132,      // 66 bytes = 512-bit
-            SignatureScheme::SphincsPlus => 128,    // 64 bytes
-            SignatureScheme::Dilithium3 => 5120,    // 2560 bytes
+            SignatureScheme::Secp512r1 => 132,   // 66 bytes = 512-bit
+            SignatureScheme::SphincsPlus => 128, // 64 bytes
+            SignatureScheme::Dilithium3 => 5120, // 2560 bytes
             SignatureScheme::Hybrid => {
                 return Err(KeyError::InvalidFormat(
                     "Hybrid scheme not supported for direct hex import".to_string(),
@@ -518,8 +516,9 @@ impl PrivateKeyImporter {
         }
 
         // Derive public key from private key using the appropriate scheme
-        let public_key = crate::derive_public_key(scheme, &private_key_bytes)
-            .map_err(|e| KeyError::GenerationError(format!("Failed to derive public key: {}", e)))?;
+        let public_key = crate::derive_public_key(scheme, &private_key_bytes).map_err(|e| {
+            KeyError::GenerationError(format!("Failed to derive public key: {}", e))
+        })?;
 
         Ok(KeyPair::new(scheme, public_key, private_key_bytes))
     }
@@ -540,7 +539,9 @@ impl PrivateKeyImporter {
         if key_bytes.len() != expected_len {
             return Err(KeyError::InvalidFormat(format!(
                 "Private key must be {} bytes for {:?}, got {}",
-                expected_len, scheme, key_bytes.len()
+                expected_len,
+                scheme,
+                key_bytes.len()
             )));
         }
 
@@ -559,8 +560,8 @@ impl PrivateKeyImporter {
 // KEYSTORE/JSON WALLET IMPORT (Geth/MetaMask format)
 // ============================================================================
 
-use serde::{Deserialize, Serialize};
 use pbkdf2::pbkdf2_hmac;
+use serde::{Deserialize, Serialize};
 
 /// Keystore V3 format (Geth/MetaMask compatible)
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -630,11 +631,11 @@ pub struct KeystoreImporter;
 
 impl KeystoreImporter {
     /// Import private key from Geth/MetaMask keystore JSON
-    /// 
+    ///
     /// # Arguments
     /// * `keystore_json` - JSON string containing keystore data
     /// * `password` - Password to decrypt the keystore
-    /// 
+    ///
     /// # Returns
     /// KeyPair with imported private key
     pub fn from_json(keystore_json: &str, password: &str) -> Result<KeyPair> {
@@ -655,7 +656,8 @@ impl KeystoreImporter {
         }
 
         // Validate cipher - use ChaCha20-Poly1305 (512-bit authenticated encryption)
-        if keystore.crypto.cipher != "chacha20-poly1305" && keystore.crypto.cipher != "aes-128-ctr" {
+        if keystore.crypto.cipher != "chacha20-poly1305" && keystore.crypto.cipher != "aes-128-ctr"
+        {
             return Err(KeyError::InvalidFormat(format!(
                 "Unsupported cipher: {}. Expected chacha20-poly1305 or aes-128-ctr (legacy)",
                 keystore.crypto.cipher
@@ -790,7 +792,7 @@ impl KeystoreImporter {
         let mut plaintext = Vec::new();
         let mut key_stream_pos: usize = 0;
         let mut key_stream = [0u8; 64];
-        
+
         for byte in ciphertext {
             if key_stream_pos == 0 {
                 // Generate next block of keystream
@@ -800,7 +802,7 @@ impl KeystoreImporter {
                 hasher.update((key_stream_pos as u64).to_le_bytes());
                 key_stream.copy_from_slice(&hasher.finalize());
             }
-            
+
             plaintext.push(byte ^ key_stream[key_stream_pos % 64]);
             key_stream_pos = (key_stream_pos + 1) % 64;
         }
@@ -846,9 +848,9 @@ pub struct Argon2Params {
 impl Default for Argon2Params {
     fn default() -> Self {
         Self {
-            m_cost: 19456,  // 19 MiB
-            t_cost: 2,      // 2 iterations
-            p_cost: 1,      // 1 thread
+            m_cost: 19456, // 19 MiB
+            t_cost: 2,     // 2 iterations
+            p_cost: 1,     // 1 thread
         }
     }
 }
@@ -858,7 +860,7 @@ pub struct WalletEncryption;
 
 impl WalletEncryption {
     /// Encrypt a private key with password
-    /// 
+    ///
     /// # Arguments
     /// * `private_key` - Private key bytes (variable length depending on scheme)
     ///   - Secp512r1: 66 bytes
@@ -866,7 +868,7 @@ impl WalletEncryption {
     ///   - Dilithium3: 2560 bytes
     /// * `password` - Password for encryption
     /// * `params` - Argon2id parameters (uses defaults if None)
-    /// 
+    ///
     /// # Returns
     /// EncryptedWallet structure with encrypted data
     pub fn encrypt(
@@ -895,7 +897,7 @@ impl WalletEncryption {
         let mut ciphertext = Vec::new();
         let mut key_stream_pos: usize = 0;
         let mut key_stream = [0u8; 64];
-        
+
         for byte in private_key {
             if key_stream_pos == 0 {
                 // Generate next block of keystream
@@ -905,7 +907,7 @@ impl WalletEncryption {
                 hasher.update((key_stream_pos as u64).to_le_bytes());
                 key_stream.copy_from_slice(&hasher.finalize());
             }
-            
+
             ciphertext.push(byte ^ key_stream[key_stream_pos % 64]);
             key_stream_pos = (key_stream_pos + 1) % 64;
         }
@@ -928,11 +930,11 @@ impl WalletEncryption {
     }
 
     /// Decrypt an encrypted wallet with password
-    /// 
+    ///
     /// # Arguments
     /// * `encrypted` - EncryptedWallet structure
     /// * `password` - Password for decryption
-    /// 
+    ///
     /// # Returns
     /// Decrypted private key (variable length depending on scheme)
     pub fn decrypt(encrypted: &EncryptedWallet, password: &str) -> Result<Vec<u8>> {
@@ -970,7 +972,7 @@ impl WalletEncryption {
         let mut plaintext = Vec::new();
         let mut key_stream_pos: usize = 0;
         let mut key_stream = [0u8; 64];
-        
+
         for byte in &ciphertext {
             if key_stream_pos == 0 {
                 // Generate next block of keystream
@@ -980,7 +982,7 @@ impl WalletEncryption {
                 hasher.update((key_stream_pos as u64).to_le_bytes());
                 key_stream.copy_from_slice(&hasher.finalize());
             }
-            
+
             plaintext.push(byte ^ key_stream[key_stream_pos % 64]);
             key_stream_pos = (key_stream_pos + 1) % 64;
         }
@@ -990,7 +992,7 @@ impl WalletEncryption {
         hasher.update(&derived_key);
         hasher.update(&ciphertext);
         let computed_tag = hasher.finalize();
-        
+
         if computed_tag[..16].to_vec() != tag {
             return Err(KeyError::InvalidPassword);
         }
@@ -1005,11 +1007,7 @@ impl WalletEncryption {
     }
 
     /// Derive key using Argon2id
-    fn derive_key_argon2id(
-        password: &str,
-        salt: &[u8],
-        params: &Argon2Params,
-    ) -> Result<Vec<u8>> {
+    fn derive_key_argon2id(password: &str, salt: &[u8], params: &Argon2Params) -> Result<Vec<u8>> {
         use sha2::Sha512;
 
         // Use PBKDF2 for key derivation (compatible with standard implementations)

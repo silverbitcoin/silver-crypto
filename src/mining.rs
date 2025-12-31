@@ -71,7 +71,7 @@ pub fn compute_sha512_with_nonce(header: &[u8], nonce: u64) -> [u8; 64] {
     let mut hasher = Sha512::new();
     hasher.update(header);
     hasher.update(nonce.to_le_bytes());
-    
+
     let result = hasher.finalize();
     let mut hash = [0u8; 64];
     hash.copy_from_slice(&result);
@@ -83,7 +83,7 @@ pub fn compute_sha512_with_nonce(header: &[u8], nonce: u64) -> [u8; 64] {
 pub fn compute_sha512(data: &[u8]) -> [u8; 64] {
     let mut hasher = Sha512::new();
     hasher.update(data);
-    
+
     let result = hasher.finalize();
     let mut hash = [0u8; 64];
     hash.copy_from_slice(&result);
@@ -97,16 +97,16 @@ pub fn meets_difficulty(hash: &[u8; 64], target: u64) -> bool {
     // Convert target to leading zero bits required
     // target = 1000 means we need hash to be less than 2^(256-log2(1000))
     // Simpler: convert hash to u256 and compare with target
-    
+
     // For Bitcoin-style: leading zeros in hash
     // We use: hash < (2^256 / difficulty)
-    
+
     // Convert first 32 bytes of hash to u256-like comparison
     let mut hash_value = 0u64;
     for byte in hash.iter().take(8) {
         hash_value = (hash_value << 8) | (*byte as u64);
     }
-    
+
     // Check if hash_value < target
     // Lower target = harder difficulty
     hash_value < target
@@ -114,11 +114,7 @@ pub fn meets_difficulty(hash: &[u8; 64], target: u64) -> bool {
 
 /// Mine a block header to find a valid nonce
 /// Real production implementation with configurable iteration limit
-pub fn mine_block(
-    header: &[u8],
-    target: u64,
-    max_iterations: u64,
-) -> Result<WorkProof> {
+pub fn mine_block(header: &[u8], target: u64, max_iterations: u64) -> Result<WorkProof> {
     if target == 0 {
         return Err(MiningError::InvalidDifficulty(
             "Target must be greater than 0".to_string(),
@@ -172,22 +168,17 @@ impl DifficultyAdjuster {
 
     /// Adjust difficulty based on actual block time
     /// Real production implementation
-    pub fn adjust_difficulty(
-        &self,
-        current_difficulty: u64,
-        actual_time: u64,
-    ) -> u64 {
+    pub fn adjust_difficulty(&self, current_difficulty: u64, actual_time: u64) -> u64 {
         // Calculate expected time for adjustment interval
         let expected_time = self.target_block_time * self.adjustment_interval;
 
         // Adjust difficulty proportionally
-        
 
         if actual_time > 0 {
             // new_diff = current_diff * expected_time / actual_time
-            let adjusted = (current_difficulty as u128 * expected_time as u128)
-                / actual_time as u128;
-            
+            let adjusted =
+                (current_difficulty as u128 * expected_time as u128) / actual_time as u128;
+
             // Clamp to min/max
             let clamped = std::cmp::min(adjusted as u64, self.max_difficulty);
             std::cmp::max(clamped, self.min_difficulty)
@@ -225,7 +216,7 @@ mod tests {
         let data = b"test data";
         let hash = compute_sha512(data);
         assert_eq!(hash.len(), 64);
-        
+
         // Verify deterministic
         let hash2 = compute_sha512(data);
         assert_eq!(hash, hash2);
@@ -235,11 +226,11 @@ mod tests {
     fn test_compute_sha512_with_nonce() {
         let header = b"block header";
         let nonce = 12345u64;
-        
+
         let hash1 = compute_sha512_with_nonce(header, nonce);
         let hash2 = compute_sha512_with_nonce(header, nonce);
         assert_eq!(hash1, hash2);
-        
+
         // Different nonce should give different hash
         let hash3 = compute_sha512_with_nonce(header, nonce + 1);
         assert_ne!(hash1, hash3);
@@ -248,11 +239,11 @@ mod tests {
     #[test]
     fn test_meets_difficulty() {
         let mut hash = [0u8; 64];
-        
+
         // Easy difficulty (high target)
         let easy_target = u64::MAX;
         assert!(meets_difficulty(&hash, easy_target));
-        
+
         // Hard difficulty (low target)
         let hard_target = 1000;
         // Most hashes won't meet this
@@ -265,10 +256,10 @@ mod tests {
     fn test_mine_block() {
         let header = b"test block header";
         let target = u64::MAX / 1000; // Moderate difficulty
-        
+
         let proof = mine_block(header, target, 1_000_000);
         assert!(proof.is_ok());
-        
+
         let proof = proof.unwrap();
         assert!(meets_difficulty(&proof.hash, proof.target));
     }
@@ -277,7 +268,7 @@ mod tests {
     fn test_work_proof_verify() {
         let header = b"test block";
         let target = u64::MAX / 100;
-        
+
         let proof = mine_block(header, target, 1_000_000).unwrap();
         assert!(proof.verify(header).is_ok());
     }
@@ -285,16 +276,16 @@ mod tests {
     #[test]
     fn test_difficulty_adjuster() {
         let adjuster = DifficultyAdjuster::new(30, 2016, 1000, 1_000_000_000);
-        
+
         let current_diff = 100_000;
-        
+
         // If blocks came faster than expected, increase difficulty
         let expected_time = 30 * 2016; // 60480 seconds
         let actual_time = expected_time / 2; // Half the time
-        
+
         let new_diff = adjuster.adjust_difficulty(current_diff, actual_time);
         assert!(new_diff > current_diff);
-        
+
         // If blocks came slower, decrease difficulty
         let actual_time = expected_time * 2;
         let new_diff = adjuster.adjust_difficulty(current_diff, actual_time);
@@ -304,7 +295,7 @@ mod tests {
     #[test]
     fn test_difficulty_validation() {
         let adjuster = DifficultyAdjuster::new(30, 2016, 1000, 1_000_000_000);
-        
+
         assert!(adjuster.validate_difficulty(50_000).is_ok());
         assert!(adjuster.validate_difficulty(500).is_err()); // Below min
         assert!(adjuster.validate_difficulty(2_000_000_000).is_err()); // Above max

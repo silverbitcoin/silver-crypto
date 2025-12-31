@@ -8,7 +8,7 @@
 //! - Provides 512-bit preimage resistance
 //! - Industry standard for blockchain applications
 
-use sha2::{Sha512, Digest};
+use sha2::{Digest, Sha512};
 use silver_core::SilverAddress;
 use thiserror::Error;
 
@@ -142,7 +142,7 @@ pub fn derive_address_canonical(public_key: &[u8]) -> Result<SilverAddress> {
 
     // Validate and normalize public key to canonical form
     let canonical_key = normalize_public_key(public_key)?;
-    
+
     // Hash the canonical form with domain separation
     let hash = hash_512_domain(&canonical_key, HashDomain::Address);
     Ok(SilverAddress(hash))
@@ -176,7 +176,7 @@ fn normalize_public_key(public_key: &[u8]) -> Result<Vec<u8>> {
             // Compress: use 02/03 prefix based on Y coordinate parity
             let y_last_byte = public_key[64];
             let prefix = if y_last_byte & 1 == 0 { 0x02 } else { 0x03 };
-            
+
             let mut compressed = vec![prefix];
             compressed.extend_from_slice(&public_key[1..33]); // X coordinate
             Ok(compressed)
@@ -186,17 +186,15 @@ fn normalize_public_key(public_key: &[u8]) -> Result<Vec<u8>> {
             // Compress: use 02/03 prefix based on Y coordinate parity
             let y_last_byte = public_key[63];
             let prefix = if y_last_byte & 1 == 0 { 0x02 } else { 0x03 };
-            
+
             let mut compressed = vec![prefix];
             compressed.extend_from_slice(&public_key[0..32]); // X coordinate
             Ok(compressed)
         }
-        _ => Err(HashError::InvalidInput(
-            format!(
-                "Invalid public key length: {}. Expected 33, 64, or 65 bytes",
-                public_key.len()
-            ),
-        )),
+        _ => Err(HashError::InvalidInput(format!(
+            "Invalid public key length: {}. Expected 33, 64, or 65 bytes",
+            public_key.len()
+        ))),
     }
 }
 
@@ -235,16 +233,14 @@ pub fn hash_512_batch(inputs: &[&[u8]]) -> Vec<[u8; 64]> {
 /// Compute a keyed hash using SHA-512 HMAC
 pub fn hash_512_keyed(key: &[u8; 32], data: &[u8]) -> Result<[u8; 64]> {
     use hmac::{Hmac, Mac};
-    
+
     // HMAC-SHA512 with proper error handling
     // The key is always 32 bytes, which is valid for HMAC-SHA512
     let mut mac = Hmac::<Sha512>::new_from_slice(key)
-        .map_err(|e| HashError::ComputationError(
-            format!("HMAC initialization failed: {}", e)
-        ))?;
-    
+        .map_err(|e| HashError::ComputationError(format!("HMAC initialization failed: {}", e)))?;
+
     mac.update(data);
-    
+
     let mut output = [0u8; 64];
     output.copy_from_slice(&mac.finalize().into_bytes());
     Ok(output)
@@ -255,14 +251,14 @@ pub fn derive_key(context: &str, key_material: &[u8], output_len: usize) -> Vec<
     let mut hasher = Sha512::new();
     hasher.update(context.as_bytes());
     hasher.update(key_material);
-    
+
     let hash = hasher.finalize();
     let mut output = vec![0u8; output_len];
-    
+
     // Use the hash as the base for key derivation
     for i in 0..output_len {
         output[i] = hash[i % 64];
     }
-    
+
     output
 }

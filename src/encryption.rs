@@ -14,8 +14,8 @@ use hex;
 use rand::RngCore;
 use rand_core::OsRng;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha512};
 use thiserror::Error;
-use sha2::{Sha512, Digest};
 
 /// Encryption-related errors
 #[derive(Error, Debug)]
@@ -180,7 +180,7 @@ impl KeyEncryption {
         let mut ciphertext = Vec::new();
         let mut key_stream_pos: usize = 0;
         let mut key_stream = [0u8; 64];
-        
+
         for byte in private_key {
             if key_stream_pos == 0 {
                 // Generate next block of keystream
@@ -190,7 +190,7 @@ impl KeyEncryption {
                 hasher.update((key_stream_pos as u64).to_le_bytes());
                 key_stream.copy_from_slice(&hasher.finalize());
             }
-            
+
             ciphertext.push(byte ^ key_stream[key_stream_pos % 64]);
             key_stream_pos = (key_stream_pos + 1) % 64;
         }
@@ -217,35 +217,37 @@ impl KeyEncryption {
         // Kyber1024 provides 256-bit post-quantum security against quantum computers
         // Combined with SHA-512 for classical security (512-bit)
         // This creates a hybrid scheme resistant to both classical and quantum attacks
-        
+
         // Generate random salt for Argon2id key derivation
         let mut salt = vec![0u8; 32];
         OsRng.fill_bytes(&mut salt);
-        
+
         // Derive password-based encryption key using Argon2id
         let derived_key = Self::derive_key_argon2(password, &salt, &params)?;
-        
+
         // Generate random nonce for stream cipher
         let mut nonce = [0u8; 12];
         OsRng.fill_bytes(&mut nonce);
-        
+
         // Generate Kyber1024 keypair seed from password + random entropy
         let mut kyber_seed = [0u8; 32];
         let mut hasher = Sha512::new();
         hasher.update(password.as_bytes());
-        hasher.update(&nonce);
-        hasher.update(std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos().to_le_bytes().to_vec())
-            .unwrap_or_default());
+        hasher.update(nonce);
+        hasher.update(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos().to_le_bytes().to_vec())
+                .unwrap_or_default(),
+        );
         let seed_hash = hasher.finalize();
         kyber_seed.copy_from_slice(&seed_hash[..32]);
-        
+
         // Encrypt private key using SHA-512 based stream cipher
         let mut ciphertext = Vec::new();
         let mut key_stream_pos: usize = 0;
         let mut key_stream = [0u8; 64];
-        
+
         for byte in private_key {
             if key_stream_pos == 0 {
                 // Generate next block of keystream using SHA-512
@@ -255,16 +257,16 @@ impl KeyEncryption {
                 ks_hasher.update((key_stream_pos as u64).to_le_bytes());
                 key_stream.copy_from_slice(&ks_hasher.finalize());
             }
-            
+
             ciphertext.push(byte ^ key_stream[key_stream_pos % 64]);
             key_stream_pos = (key_stream_pos + 1) % 64;
         }
-        
+
         // Encrypt Kyber seed with derived key for post-quantum KEM
         let mut kyber_secret_encrypted = Vec::new();
         let mut ks_pos: usize = 0;
         let mut ks = [0u8; 64];
-        
+
         for byte in &kyber_seed {
             if ks_pos == 0 {
                 let mut ks_hasher = Sha512::new();
@@ -273,11 +275,11 @@ impl KeyEncryption {
                 ks_hasher.update((ks_pos as u64 + 1000).to_le_bytes());
                 ks.copy_from_slice(&ks_hasher.finalize());
             }
-            
+
             kyber_secret_encrypted.push(byte ^ ks[ks_pos % 64]);
             ks_pos = (ks_pos + 1) % 64;
         }
-        
+
         Ok(EncryptedKey {
             scheme: EncryptionScheme::Kyber1024XChaCha20,
             nonce,
@@ -294,7 +296,9 @@ impl KeyEncryption {
     pub fn decrypt(encrypted_key: &EncryptedKey, password: &str) -> Result<Vec<u8>> {
         match encrypted_key.scheme {
             EncryptionScheme::XChaCha20Poly1305 => Self::decrypt_classical(encrypted_key, password),
-            EncryptionScheme::Kyber1024XChaCha20 => Self::decrypt_classical(encrypted_key, password),
+            EncryptionScheme::Kyber1024XChaCha20 => {
+                Self::decrypt_classical(encrypted_key, password)
+            }
         }
     }
 
@@ -308,7 +312,7 @@ impl KeyEncryption {
         let mut plaintext = Vec::new();
         let mut key_stream_pos: usize = 0;
         let mut key_stream = [0u8; 64];
-        
+
         for byte in &encrypted_key.ciphertext {
             if key_stream_pos == 0 {
                 // Generate next block of keystream
@@ -318,7 +322,7 @@ impl KeyEncryption {
                 hasher.update((key_stream_pos as u64).to_le_bytes());
                 key_stream.copy_from_slice(&hasher.finalize());
             }
-            
+
             plaintext.push(byte ^ key_stream[key_stream_pos % 64]);
             key_stream_pos = (key_stream_pos + 1) % 64;
         }

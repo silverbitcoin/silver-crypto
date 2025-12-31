@@ -29,6 +29,10 @@ pqcrypto-sphincsplus = "0.7"
 pqcrypto-dilithium = "0.5"
 pqcrypto-traits = "0.3"
 
+# Logging
+tracing = "0.1"
+silver-logging = { path = "../silver-logging" }
+
 # Classical Cryptography (512-bit)
 p521 = "0.13"
 sha2 = "0.10"

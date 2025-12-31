@@ -16,32 +16,39 @@
 pub mod encryption;
 pub mod hashing;
 pub mod keys;
-pub mod signatures;
 pub mod mining;
+pub mod signatures;
 
 pub use encryption::{EncryptedKey, EncryptionScheme, KeyEncryption};
 pub use hashing::{derive_address, hash_512, Blake3Hasher};
 pub use keys::{HDWallet, KeyPair, Mnemonic};
-pub use signatures::{
-    Dilithium3, HybridSignature, Secp512r1, SignatureError, SignatureScheme,
-    SignatureSigner, SignatureVerifier, SphincsPlus,
-};
 pub use mining::{
     compute_sha512, compute_sha512_with_nonce, meets_difficulty, mine_block, DifficultyAdjuster,
     MiningError, WorkProof,
 };
+pub use signatures::{
+    Dilithium3, HybridSignature, Secp512r1, SignatureError, SignatureScheme, SignatureSigner,
+    SignatureVerifier, SphincsPlus,
+};
 
 /// Derive public key from private key using the specified signature scheme
 /// Real production implementation for all supported 512-bit schemes
-pub fn derive_public_key(scheme: SignatureScheme, private_key: &[u8]) -> Result<Vec<u8>, signatures::SignatureError> {
+pub fn derive_public_key(
+    scheme: SignatureScheme,
+    private_key: &[u8],
+) -> Result<Vec<u8>, signatures::SignatureError> {
     match scheme {
         SignatureScheme::Secp512r1 => {
             // Secp512r1: derive public key from 66-byte private key
             use p521::ecdsa::{SigningKey as P521SigningKey, VerifyingKey as P521VerifyingKey};
-            
-            let signing_key = P521SigningKey::from_bytes(private_key.into())
-                .map_err(|e| signatures::SignatureError::MalformedPrivateKey(format!("Invalid secp512r1 key: {}", e)))?;
-            
+
+            let signing_key = P521SigningKey::from_bytes(private_key.into()).map_err(|e| {
+                signatures::SignatureError::MalformedPrivateKey(format!(
+                    "Invalid secp512r1 key: {}",
+                    e
+                ))
+            })?;
+
             let verifying_key = P521VerifyingKey::from(&signing_key);
             Ok(verifying_key.to_encoded_point(false).as_bytes().to_vec())
         }
@@ -63,7 +70,7 @@ pub fn derive_public_key(scheme: SignatureScheme, private_key: &[u8]) -> Result<
             // Hybrid: derive both secp512r1 and SPHINCS+ public keys
             let secp_pub = derive_public_key(SignatureScheme::Secp512r1, &private_key[..66])?;
             let sphincs_pub = derive_public_key(SignatureScheme::SphincsPlus, &private_key[66..])?;
-            
+
             let mut combined = Vec::new();
             combined.extend_from_slice(&(secp_pub.len() as u32).to_le_bytes());
             combined.extend_from_slice(&secp_pub);

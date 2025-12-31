@@ -157,11 +157,12 @@ impl SignatureSigner for SphincsPlus {
     fn public_key(&self, private_key: &[u8]) -> Result<PublicKey> {
         // Validate private key length (SPHINCS+ secret key is 64 bytes)
         if private_key.len() != 64 {
-            return Err(SignatureError::MalformedPrivateKey(
-                format!("Invalid SPHINCS+ secret key length: expected 64, got {}", private_key.len())
-            ));
+            return Err(SignatureError::MalformedPrivateKey(format!(
+                "Invalid SPHINCS+ secret key length: expected 64, got {}",
+                private_key.len()
+            )));
         }
-        
+
         let _sk = sphincs::SecretKey::from_bytes(private_key)
             .map_err(|e| SignatureError::MalformedPrivateKey(format!("{:?}", e)))?;
 
@@ -254,7 +255,7 @@ impl SignatureSigner for Dilithium3 {
         // Dilithium3 secret key structure contains the public key
         // Secret key format: seed (32 bytes) + public key (1312 bytes) + other data
         // Total secret key size: 2560 bytes
-        
+
         // Validate secret key format
         let _sk = dilithium3::SecretKey::from_bytes(private_key)
             .map_err(|e| SignatureError::MalformedPrivateKey(format!("{:?}", e)))?;
@@ -262,8 +263,9 @@ impl SignatureSigner for Dilithium3 {
         // Extract public key from secret key
         // In Dilithium, the public key is derived from the secret key
         // We need to regenerate it from the seed
-        let pk = dilithium3::PublicKey::from_bytes(&private_key[32..32+1312])
-            .map_err(|e| SignatureError::MalformedPrivateKey(format!("Failed to extract public key: {:?}", e)))?;
+        let pk = dilithium3::PublicKey::from_bytes(&private_key[32..32 + 1312]).map_err(|e| {
+            SignatureError::MalformedPrivateKey(format!("Failed to extract public key: {:?}", e))
+        })?;
 
         Ok(PublicKey {
             scheme: SignatureScheme::Dilithium3,
